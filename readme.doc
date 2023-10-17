@@ -1,0 +1,3 @@
+The Excel file sales.xls contains the unit sales of 100 brands (7 productcategories, 4 markets, 124 weeks, period 1986-1988). 
+The Excel files price.cls, coupon.xls, displ.xls contains the price of the brands, coupon and display dummies per week. 
+The data are constructed from the ERIM database which contains four markets.
