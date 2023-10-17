@@ -1,0 +1,11 @@
+pandas
+numpy
+
+matplotlib
+statsmodels
+scipy
+tabulate
+proc
+
+xlrd
+arviz
