@@ -1,128 +1,128 @@
 import pandas as pd
 import numpy as np
-
 import matplotlib.pyplot as plt
 from statsmodels.graphics.tsaplots import plot_acf
-import arviz as az
 
 '''
 ***************************************
 Settings of the Gibbs Sampler
 ***************************************
 '''
+np.random.seed(0)  # set random seed
+
+# Settings
+nos = 100000  # Number of samples after burn-in
+nob = 5000  # Number of burn-in samples
+nod = 5  # Thin value
+total_samples = (nos * nod) + nob  # Total number of samples including burn-in
+trace_draws = 2500
+
+# Initialize parameters
+sigma_0_sq = 1.0
+sigma_1_sq = 1.0
+beta = np.zeros(4)  # [beta_0, beta_1, beta_2, beta_3]
+
+# Load and prepare data
 data_folder_path = './data/'
-dataset = 'brand48'  # corresponding to student number 609948jw
+dataset = 'brand48'
 
-nos = 1000  # number of simulations
-nob = 100  # number of burn-in simulations
-nod = 1  # consider every nod-th draw (thin value)
-trace_draws = 100  # number of draws for traceplot
+sales = pd.read_excel(data_folder_path + 'sales.xls', usecols=[dataset]).values
+price = pd.read_excel(data_folder_path + 'price.xls', usecols=[dataset]).values
+coupon = pd.read_excel(data_folder_path + 'coupon.xls', usecols=[dataset]).values
+display = pd.read_excel(data_folder_path + 'displ.xls', usecols=[dataset]).values
 
-# Initialize parameters (sigma0, sigma1, and beta)
-sigma0_sq = 1
-sigma1_sq = 1
-beta = np.zeros(4)  # Initialize beta with zeros, size based on X dimension in assignment
-'''
-***************************************
-Load and filter Data
-***************************************
-'''
-# Load each DataFrame and filter based on dataset name
-sales = pd.read_excel(data_folder_path + 'sales.xls', usecols=[dataset]).rename(columns={dataset: 'sales'})
-price = pd.read_excel(data_folder_path + 'price.xls', usecols=[dataset]).rename(columns={dataset: 'price'})
-coupon = pd.read_excel(data_folder_path + 'coupon.xls', usecols=[dataset]).rename(columns={dataset: 'coupon'})
-display = pd.read_excel(data_folder_path + 'displ.xls', usecols=[dataset]).rename(columns={dataset: 'display'})
+logsales = np.log(sales)
+logprice = np.log(price)
 
-# Take logarithm of sales and price
-logsales = np.log(sales).rename(columns={'sales': 'logsales'})
-logprice = np.log(price).rename(columns={'price': 'logprice'})
+# Placeholder for samples
+beta_samples = []
+sigma0_sq_samples = []
+sigma1_sq_samples = []
 
-# Combine data into one DataFrame
-data = pd.concat([logsales, logprice['logprice'], coupon['coupon'], display['display']], axis=1)
+# Placeholder for the entire set of samples including burn-in
+all_beta_samples = []
+all_sigma0_sq_samples = []
+all_sigma1_sq_samples = []
 
-# Print top rows of DataFrame
-print(f"Top rows of data from dataset {dataset} \n {data.head()} \n")
+# Prepare the data
+y = logsales.ravel()
+X = np.column_stack((np.ones_like(logsales), display, coupon, logprice))
+T, k = X.shape
 '''
 ***************************************
 Implementation of the Gibbs sampler
 ***************************************
 '''
-N = len(data)
-beta_samples = []
-sigma0_sq_samples = []
-sigma1_sq_samples = []
-
-# Create matrices and vectors for analysis
-X = data[['logprice', 'coupon', 'display']].values
-X = np.column_stack([np.ones(N), X])  # Add intercept
-y = data['logsales'].values
-
 print('Start Gibbs sampler...')
-for i in range((nos * nod) + nob):
+# Main Gibbs sampling loop
+for i in range(total_samples):
     """The Gibbs sampler is part of the Markov Chain Monte Carlo (MCMC) algorithm used generate 
-    samples from the posterior distributions of the params β, σ0^2 and σ1^2 given the data of 
+    samples from the posterior distributions of the params beta, sigma squared 0 and sigma squared 1 given the data of 
     a regression model.
-    
+
     Given the regression context,
-    - For β (beta), the posterior conditional distribution is multivariate normal.
-    - For σ^2 (sigma squared), the posterior conditional distribution is inverse gamma.
+    - For beta, the posterior conditional distribution is multivariate normal.
+    - For sigma squared, the posterior conditional distribution is inverse gamma.
     - The mean and the inverse of the variance-covariance matrix for the conditional 
         distribution of beta are computed given current sigma values and data."""
-    if i % 1000 == 0:  # Keep track of iterations
+    if i % 10000 == 0:  # Keep track of iterations
         print(i)
 
-    # Compute inverse of the variance-covariance matrix for beta's posterior
-    inv_CoVar_beta = np.linalg.inv(
-        X.T @ np.diag(1 / (sigma0_sq * (1 - data['display']) + sigma1_sq * data['display'])) @ X)
+    # Update conditional for beta
+    sigma_t_sq = sigma_0_sq * (1 - display) + sigma_1_sq * display
+    inv_sigma_t_sq = 1 / sigma_t_sq.ravel()
 
-    # Compute the mean for beta's posterior
-    mu_beta = inv_CoVar_beta @ X.T @ np.diag(1 / (sigma0_sq * (1 - data['display']) + sigma1_sq * data['display'])) @ y
+    # Weighted least squares for beta
+    X_wls = X * np.sqrt(inv_sigma_t_sq)[:, None]
+    y_wls = y * np.sqrt(inv_sigma_t_sq)
+    beta_var = np.linalg.inv(X_wls.T @ X_wls)
+    beta_mean = beta_var @ (X_wls.T @ y_wls)
+    beta = np.random.multivariate_normal(beta_mean, beta_var)
 
-    # Sample beta from its posterior distribution
-    beta = np.random.multivariate_normal(mu_beta, inv_CoVar_beta)
-
-    # Calculate residuals
+    # Calculating residuals for the model
     residuals = y - X @ beta
+    sse_0 = np.sum((residuals[display.ravel() == 0]) ** 2)  # Squared errors for non-display
+    sse_1 = np.sum((residuals[display.ravel() == 1]) ** 2)  # Squared errors for display
+    n_0 = np.sum(1 - display)  # Count of non-display instances
+    n_1 = np.sum(display)  # Count of display instances
 
-    # Update and sample sigma0_sq and sigma1_sq based on residuals
-    sigma0_sq = 1 / np.random.gamma(N / 2, 2 / np.sum((1 - data['display']) * residuals ** 2))
-    sigma1_sq = 1 / np.random.gamma(N / 2, 2 / np.sum(data['display'] * residuals ** 2))
+    # Setting prior specifications
+    prior_alpha = 1  # Shape parameter
+    prior_beta = 0  # Scale parameter
 
-    # Store the samples only every thin operation
-    if i % nod == 0:
+    # Deriving posterior parameters from data and prior
+    shape_0 = 0.5 * n_0 + prior_alpha  # Determining shape for sigma_0_sq
+    shape_1 = 0.5 * n_1 + prior_alpha  # Determining shape for sigma_1_sq
+    scale_0 = 0.5 * sse_0 + prior_beta  # Determining scale for sigma_0_sq
+    scale_1 = 0.5 * sse_1 + prior_beta  # Determining scale for sigma_1_sq
+
+    # Sampling from the Inverse Gamma distribution for posterior estimates
+    sigma_0_sq = 1 / np.random.gamma(shape=shape_0, scale=1 / scale_0)  # Posterior sample for sigma_0_sq
+    sigma_1_sq = 1 / np.random.gamma(shape=shape_1, scale=1 / scale_1)  # Posterior sample for sigma_1_sq
+
+    # Store all samples including burn-in
+    all_beta_samples.append(beta)
+    all_sigma0_sq_samples.append(sigma_0_sq)
+    all_sigma1_sq_samples.append(sigma_1_sq)
+
+    # Store samples after burn-in with thinning applied
+    if i >= nob and (i - nob) % nod == 0:
         beta_samples.append(beta)
-        sigma0_sq_samples.append(sigma0_sq)
-        sigma1_sq_samples.append(sigma1_sq)
+        sigma0_sq_samples.append(sigma_0_sq)
+        sigma1_sq_samples.append(sigma_1_sq)
 
-# Implementing Burn-in
+# Convert samples to arrays
 beta_samples = np.array(beta_samples)
 sigma0_sq_samples = np.array(sigma0_sq_samples)
 sigma1_sq_samples = np.array(sigma1_sq_samples)
 
-beta_samples_burn = np.array(beta_samples[nob:])
-sigma0_sq_samples_burn = np.array(sigma0_sq_samples[nob:])
-sigma1_sq_samples_burn = np.array(sigma1_sq_samples[nob:])
+all_beta_samples = np.array(all_beta_samples)
+all_sigma0_sq_samples = np.array(all_sigma0_sq_samples)
+all_sigma1_sq_samples = np.array(all_sigma1_sq_samples)
 
-# Assume beta_samples_burn, sigma0_sq_samples_burn, sigma1_sq_samples_burn are your post-burn-in samples
-data_dict = {
-    "beta": beta_samples_burn,
-    "sigma0_sq": sigma0_sq_samples_burn,
-    "sigma1_sq": sigma1_sq_samples_burn
-}
-
-# Convert them to ArviZ's data format
-inference_data = az.convert_to_inference_data(data_dict)
-
-# Compute R-hat
-rhat_vals = az.rhat(inference_data)
-
-# You can access individual R-hat values like this:
-print("R-hat for beta:", rhat_vals["beta"])
-print("R-hat for sigma0_sq:", rhat_vals["sigma0_sq"])
-print("R-hat for sigma1_sq:", rhat_vals["sigma1_sq"])
 '''
 ***************************************
-Creating and Printing Results 
+Results and Statistical Insights 
 ***************************************
 '''
 # Creating a dictionary with parameter names and the respective percentiles.
@@ -133,8 +133,8 @@ percentiles_data = {
     "90% percentile": []
 }
 
-parameters = ["β0", "β1", "β2", "β3", "σ^2_0", "σ^2_1"]
-samples_list = [beta_samples_burn[:, i] for i in range(4)] + [sigma0_sq_samples_burn, sigma1_sq_samples_burn]
+parameters = ["beta0", "beta1", "beta2", "beta3", "sigma0", "sigma1"]
+samples_list = [beta_samples[:, i] for i in range(4)] + [sigma0_sq_samples, sigma1_sq_samples]
 
 for param, samples in zip(parameters, samples_list):
     percentiles_data["Parameter"].append(param)
@@ -146,7 +146,7 @@ for param, samples in zip(parameters, samples_list):
 df = pd.DataFrame(percentiles_data)
 
 # Compute the posterior mean of the sigma ratio
-posterior_mean_ratio = np.mean(sigma0_sq_samples_burn / sigma1_sq_samples_burn)
+posterior_mean_ratio = np.mean(sigma0_sq_samples / sigma1_sq_samples)
 
 # Print details and results using the DataFrame's to_string method.
 print("\nDetails MCMC sampler:")
@@ -158,6 +158,51 @@ print("Posterior Results:")
 print(df.to_string(index=False))
 print("\n")
 print(f"The posterior mean of the ratio σ^2_0/σ^2_1 is: {posterior_mean_ratio}")
+
+"""
+***************************************
+Geweke test diagnostic for convergence 
+***************************************
+"""
+
+
+def geweke_diagnostic(samples, first=0.1, last=0.5):
+    n = len(samples)
+    first_idx = int(n * first)
+    last_idx = int(n * last)
+
+    mean_first_segment = np.mean(samples[:first_idx])
+    mean_last_segment = np.mean(samples[-last_idx:])
+
+    var_first_segment = np.var(samples[:first_idx])
+    var_last_segment = np.var(samples[-last_idx:])
+
+    numerator = mean_first_segment - mean_last_segment
+    denominator = np.sqrt(var_first_segment / first_idx + var_last_segment / last_idx)
+    z_score = numerator / denominator
+
+    return mean_first_segment, mean_last_segment, z_score
+
+
+# Initialize list to hold table rows
+table_rows = []
+table_rows.append(['Parameter', 'Mean (First Segment)', 'Mean (Last Segment)', 'Z-score'])
+
+# Beta samples
+for i in range(4):
+    samples = beta_samples[:, i]
+    mean_first, mean_last, z_score = geweke_diagnostic(samples)
+    table_rows.append([f'beta{i}', f"{mean_first:.4f}", f"{mean_last:.4f}", f"{z_score:.4f}"])
+
+# Sigma samples
+for param_name, samples in zip(["sigma0_sq", "sigma1_sq"], [sigma0_sq_samples, sigma1_sq_samples]):
+    mean_first, mean_last, z_score = geweke_diagnostic(samples)
+    table_rows.append([param_name, f"{mean_first:.4f}", f"{mean_last:.4f}", f"{z_score:.4f}"])
+
+# Print the table
+print(f"Geweke Diagnostic Results:")
+for row in table_rows:
+    print("{:<12} {:<20} {:<20} {:<10}".format(*row))
 '''
 ***************************************
 The Code Below Generates several Plots 
@@ -170,15 +215,15 @@ axes = axes.flatten()
 
 # Plots for Beta parameters
 for i in range(4):
-    axes[i].plot(beta_samples[:trace_draws, i])
+    axes[i].plot(all_beta_samples[:trace_draws, i])
     axes[i].set_title(f'Beta {i}')
 
 # Plot for Sigma0_sq
-axes[4].plot(sigma0_sq_samples[:trace_draws])
+axes[4].plot(all_sigma0_sq_samples[:trace_draws])
 axes[4].set_title('Sigma0_sq')
 
 # Plot for Sigma1_sq
-axes[5].plot(sigma1_sq_samples[:trace_draws])
+axes[5].plot(all_sigma1_sq_samples[:trace_draws])
 axes[5].set_title('Sigma1_sq')
 
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -192,15 +237,15 @@ axes = axes.flatten()
 
 # Plots for Beta parameters
 for i in range(4):
-    axes[i].plot(beta_samples_burn[:, i])
+    axes[i].plot(beta_samples[:, i])
     axes[i].set_title(f'Beta {i}')
 
 # Plot for Sigma0_sq
-axes[4].plot(sigma0_sq_samples_burn)
+axes[4].plot(sigma0_sq_samples)
 axes[4].set_title('Sigma0_sq')
 
 # Plot for Sigma1_sq
-axes[5].plot(sigma1_sq_samples_burn)
+axes[5].plot(sigma1_sq_samples)
 axes[5].set_title('Sigma1_sq')
 
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
@@ -212,13 +257,13 @@ axes = axes.flatten()  # Flattening the axes object for easier indexing
 
 # Autocorrelation plots for each beta parameter
 for i in range(4):
-    plot_acf(beta_samples_burn[:, i], lags=10, title=f"Autocorrelation of β{i}", ax=axes[i])
+    plot_acf(beta_samples[:, i], lags=10, title=f"Autocorrelation of β{i}", ax=axes[i])
 
 # Autocorrelation plot for sigma0_sq
-plot_acf(sigma0_sq_samples_burn, lags=10, title="Autocorrelation of σ^2_0", ax=axes[4])
+plot_acf(sigma0_sq_samples, lags=10, title="Autocorrelation of σ^2_0", ax=axes[4])
 
 # Autocorrelation plot for sigma1_sq
-plot_acf(sigma1_sq_samples_burn, lags=10, title="Autocorrelation of σ^2_1", ax=axes[5])
+plot_acf(sigma1_sq_samples, lags=10, title="Autocorrelation of σ^2_1", ax=axes[5])
 
 plt.tight_layout()
 plt.show()
@@ -230,19 +275,16 @@ axes = axes.flatten()
 
 # Plots for Beta parameters
 for i in range(4):
-    axes[i].hist(beta_samples_burn[:, i], bins=20, density=True, alpha=0.7, color='blue')
+    axes[i].hist(beta_samples[:, i], bins=50, density=True, alpha=0.7, color='blue')
     axes[i].set_title(f'Histogram of Beta {i}')
 
 # Plot for Sigma0_sq
-axes[4].hist(sigma0_sq_samples_burn, bins=20, density=True, alpha=0.7, color='green')
+axes[4].hist(sigma0_sq_samples, bins=50, density=True, alpha=0.7, color='green')
 axes[4].set_title('Histogram of Sigma0_sq')
 
 # Plot for Sigma1_sq
-axes[5].hist(sigma1_sq_samples_burn, bins=20, density=True, alpha=0.7, color='red')
+axes[5].hist(sigma1_sq_samples, bins=50, density=True, alpha=0.7, color='red')
 axes[5].set_title('Histogram of Sigma1_sq')
 
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.show()
-
-
-
